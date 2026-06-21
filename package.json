@@ -1,0 +1,17 @@
+{
+  "name": "node_js_rate_limiter",
+  "version": "1.0.0",
+  "description": "Running up a distributed rate limiter using node.js and Redis",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Salman uddin",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "ioredis": "^5.11.1",
+    "nodemon": "^3.1.14"
+  },
+  "type": "module"
+}
