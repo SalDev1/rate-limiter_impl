@@ -181,5 +181,7 @@ const slidingWindowCounter = async(max_requests = 10, window_seconds = 60) => {
 export {
     isRateLimited,
     tokenBucketConsume,
-    slidingWindowCheck
+    slidingWindowCheck,
+    slidingWindowCounter,
+    leakyBucketConsume
 }
