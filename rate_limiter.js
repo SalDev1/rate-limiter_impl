@@ -57,7 +57,7 @@ const tokenBucketConsume = async(identifier, capacity = 10, refillRate = 1) => {
         // MULTI --> Queue all the commands, don't execute it yet.
         const results = await redis
         .multi()
-        .hset(key,'tokens',tokens.toString())
+        .hset(key,'tokens',tokens.toString(),'last_refill',now)
         .expire(key,Math.ceil(capacity/refillRate) + 60)
         .exec();
 
@@ -69,7 +69,53 @@ const tokenBucketConsume = async(identifier, capacity = 10, refillRate = 1) => {
     }
 }
 
-// Sliding Window Distributed Rate Limiter
+// Leaky Bucket Distributed Rate Limiter.
+const leakyBucketConsume = async(identifier, capacity = 10, leakRate = 1) => {
+    const key =  `rate:tokens:${identifier}`
+    const now = Date.now() / 1000; // seconds
+
+    for(let attempt = 0 ; attempt < 5; attempt++) {
+        // Redis starts mointoring the key. Ensuring no two requests try to consume / update
+        // the same token at the same time.
+        // Notify me if anybody changes this key before I finish - Optimistic Key
+
+        // Guarantees that no two requests can accidentally consume the same token.
+        await redis.watch(key);
+
+        const data = await redis.hgetall(key);
+        let level = data.level ? parseFloat(data.level) : 0;
+        let lastLeak = data.lastLeak ? parseFloat(data.lastLeak) : now;
+
+        // Refill tokens back to the original bucket.
+        const elapsed = now - lastLeak;
+        level = Math.min(0, level - (elapsed * leakRate));
+
+        const allowed = false;
+        const remaining = Math.max(0, Math.floor(capacity - level));
+
+        if(level + 1 <= capacity) {
+            level += 1;
+            remaining = Math.max(0,Math.floor(capacity - level));
+            allowed = 1;
+        }
+        // Starts a redis transaction and commits at the end after successful update.
+        // EXEC --> Redis telling to execute all queued commands together.
+        // MULTI --> Queue all the commands, don't execute it yet.
+        const results = await redis
+        .multi()
+        .hset(key,'level',level.toString(),'lastLeak', now)
+        .expire(key,Math.ceil(capacity/leakRate) + 1)
+        .exec();
+
+        if(results !== null) {
+            return {allowed : true, remaining : Math.floor(capacity - level)}
+        }
+        return { allowed : false , remaining : 0};
+    }
+}
+
+
+// Sliding Window Log Distributed Rate Limiter
 const slidingWindowCheck = async (identifier,limit=100, windowMs = 60000) => {
     const key = `rate:sliding:${identifier}`
     const now = Date.now();
@@ -91,6 +137,44 @@ const slidingWindowCheck = async (identifier,limit=100, windowMs = 60000) => {
         remaining : Math.max(0,limit-count),
         resetAt : now + windowMs
     }
+}
+
+// Sliding window counter distributed rate limiter.
+// Hybrid Approach of Fixed Window Counter + Sliding Window Log
+const slidingWindowCounter = async(max_requests = 10, window_seconds = 60) => {
+    const now = Date.now() / 1000; // seconds
+    const currentWindow = Math.floor(now / window_seconds);
+    const previousWindow = currentWindow - 1;
+    const elapsed = (now % window_seconds) / window_seconds;
+
+    const currentKey = `${`currentKey`}${currentWindow}`
+    const previousKey = `${`previousKey`}${previousWindow}`
+
+    const prev_count = Number(await redis.get('previousKey') || '0') || 0;
+    const current_count =  Number(await redis.get('currentKey') || '0') || 0;
+    
+    const weighted_prev = prev_count * (1 - elasped);
+    const estimated = weighted_prev + current_count;
+
+    if (estimated >= max_requests) {
+        return {
+            allowed : false,
+            remaining : 0,
+            current_count
+        }
+    }
+    
+    const pipeline = redis.pipeline();
+    const new_count = pipeline.incr(currentKey);
+
+    if(new_count == 1) {
+        pipeline.expire(currentKey , window_seconds * 2)
+    }
+
+    const new_estimate = weighted_prev * new_count;
+    const remaining = Math.max(0, Math.floor(max_requests - new_estimate));
+
+    return {1 , remaining, new_count}
 }
 
 
